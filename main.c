@@ -9,11 +9,13 @@
 #include <signal.h>
 #include <netdb.h>
 
-typedef struct client
+#define BUFFER_SIZE 1024
+
+typedef struct server
 {
     int sock;
-    char* username;
-} client;
+    char* server_name;
+} server;
 
 void error(const char *msg)
 {
@@ -21,6 +23,8 @@ void error(const char *msg)
     exit(1);
 }
 
+int bind_to_port(const char *port, int *sock, struct addrinfo **info);
+int connect_a_server(int sock, struct addrinfo *server_addr, int *connected_servers, server** servers, struct pollfd** servers_pollfd);
 void signal_handler(int);
 
 volatile int keep_running = 1;
@@ -31,15 +35,111 @@ int main(const int argc, const char** argv)
     act.sa_handler = signal_handler;
     sigaction(SIGINT, &act, NULL);
 
-    if (argc != 4)
+    if (argc != 2)
     {
-        char* tmp = malloc(44 + strlen(argv[0]) + 1);
-        sprintf(tmp, "Usage: %s <port> <server1-port> <server2-port>", argv[0]);
+        char* tmp = malloc(14 + strlen(argv[0]) + 1);
+        sprintf(tmp, "Usage: %s <port>", argv[0]);
 
         error(tmp);
 
         free(tmp);
     }
+
+    int sock;
+    struct addrinfo *server_addr;
+    if (bind_to_port(argv[1], &sock, &server_addr) != 0)
+        error("failed to bind");
+
+    listen(sock, 5);
+    struct pollfd sock_pollfd;
+    sock_pollfd.fd = sock;
+    sock_pollfd.events = POLLIN;
+
+    int connected_servers = 0;
+    server* servers = NULL;
+    struct pollfd* servers_pollfd = NULL;
+
+    char buffer[BUFFER_SIZE];
+    while (keep_running)
+    {
+        bzero(buffer, sizeof(buffer));
+
+        if (poll(&sock_pollfd, 1, 0))
+        {
+            if (connect_a_server(sock, server_addr, &connected_servers, &servers, &servers_pollfd) != 0)
+            {
+                error("failed to connect");
+            }
+        }
+    }
+
+    return 0;
+}
+
+int bind_to_port(const char *port, int *sock, struct addrinfo **info)
+{
+    struct addrinfo hints, *p;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    if (getaddrinfo(NULL, port, &hints, &p) != 0)
+        error("getaddrinfo error");
+
+    *sock = -1;
+    for (; p != NULL; p = p->ai_next)
+    {
+        if ((*sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1)
+            continue;
+
+        if (bind(*sock, p->ai_addr, p->ai_addrlen) == -1)
+        {
+            close(*sock);
+            continue;
+        }
+
+        break;
+    }
+
+    if (p == NULL || *sock == -1)
+        return 1;
+
+    *info = p;
+
+    return 0;
+}
+
+int connect_a_server(const int sock, struct addrinfo *server_addr, int *connected_servers, server** servers, struct pollfd** servers_pollfd)
+{
+    const int server_sock = accept(sock, server_addr->ai_addr, &server_addr->ai_addrlen);
+    if (server_sock < 0)
+        return 1;
+
+    (*connected_servers)++;
+    server* tmp = realloc(*servers, (*connected_servers) * sizeof(server));
+    if (tmp == NULL)
+        error("failed to allocate memory");
+    *servers = tmp;
+
+    server curr_server;
+    curr_server.sock = server_sock;
+    curr_server.server_name = NULL;
+    (*servers)[*connected_servers - 1] = curr_server;
+
+    struct pollfd* tmp_servers_pollfd = realloc(*servers_pollfd, sizeof(struct pollfd) * (*connected_servers));
+    if (tmp_servers_pollfd == NULL)
+        error("failed to allocate memory");
+    *servers_pollfd = tmp_servers_pollfd;
+
+    struct pollfd tmp_pollfd;
+    tmp_pollfd.fd = server_sock;
+    tmp_pollfd.events = POLLIN;
+    (*servers_pollfd)[*connected_servers - 1] = tmp_pollfd;
+
+    write(curr_server.sock, "ATSIUSKPAVADINIMA", 17);
+    printf("Server connected. Socket fd: %d\n", curr_server.sock);
+
     return 0;
 }
 
