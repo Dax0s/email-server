@@ -24,7 +24,8 @@ void error(const char *msg)
 }
 
 int bind_to_port(const char *port, int *sock, struct addrinfo **info);
-int connect_a_server(int sock, struct addrinfo *server_addr, int *connected_servers, server** servers, struct pollfd** servers_pollfd);
+int connect_server(int sock, struct addrinfo *server_addr, int *connected_servers, server** servers, struct pollfd** servers_pollfd);
+void receive_data(int *connected_servers, struct pollfd** servers_pollfd, server** servers);
 void signal_handler(int);
 
 volatile int keep_running = 1;
@@ -50,6 +51,8 @@ int main(const int argc, const char** argv)
     if (bind_to_port(argv[1], &sock, &server_addr) != 0)
         error("failed to bind");
 
+    printf("Server running on port %s\n", argv[1]);
+
     listen(sock, 5);
     struct pollfd sock_pollfd;
     sock_pollfd.fd = sock;
@@ -59,17 +62,19 @@ int main(const int argc, const char** argv)
     server* servers = NULL;
     struct pollfd* servers_pollfd = NULL;
 
-    char buffer[BUFFER_SIZE];
     while (keep_running)
     {
-        bzero(buffer, sizeof(buffer));
-
         if (poll(&sock_pollfd, 1, 0))
         {
-            if (connect_a_server(sock, server_addr, &connected_servers, &servers, &servers_pollfd) != 0)
+            if (connect_server(sock, server_addr, &connected_servers, &servers, &servers_pollfd) != 0)
             {
                 error("failed to connect");
             }
+        }
+
+        if (poll(servers_pollfd, connected_servers, 0))
+        {
+            receive_data(&connected_servers, &servers_pollfd, &servers);
         }
     }
 
@@ -110,7 +115,7 @@ int bind_to_port(const char *port, int *sock, struct addrinfo **info)
     return 0;
 }
 
-int connect_a_server(const int sock, struct addrinfo *server_addr, int *connected_servers, server** servers, struct pollfd** servers_pollfd)
+int connect_server(const int sock, struct addrinfo* server_addr, int* connected_servers, server** servers, struct pollfd** servers_pollfd)
 {
     const int server_sock = accept(sock, server_addr->ai_addr, &server_addr->ai_addrlen);
     if (server_sock < 0)
@@ -137,10 +142,73 @@ int connect_a_server(const int sock, struct addrinfo *server_addr, int *connecte
     tmp_pollfd.events = POLLIN;
     (*servers_pollfd)[*connected_servers - 1] = tmp_pollfd;
 
-    write(curr_server.sock, "ATSIUSKPAVADINIMA", 17);
+    write(curr_server.sock, "ATSIUSKPAVADINIMA\n", 18);
     printf("Server connected. Socket fd: %d\n", curr_server.sock);
 
     return 0;
+}
+
+void disconnect_server(const int i, int* connected_clients, struct pollfd** servers_pollfd, server** servers)
+{
+    printf("Server with socket fd %d and title %s disconnected", (*servers_pollfd)[i].fd, servers[i]->server_name);
+
+    close((*servers_pollfd)[i].fd);
+
+    free((*servers)[i].server_name);
+
+    for (int j = i; j < *connected_clients - 1; j++)
+    {
+        (*servers_pollfd)[j] = (*servers_pollfd)[j + 1];
+        (*servers)[j] = (*servers)[j + 1];
+
+        (*connected_clients)--;
+
+        struct pollfd* tmp_pollfd = realloc(*servers_pollfd, sizeof(struct pollfd) * *connected_clients);
+        if (tmp_pollfd == NULL)
+            error("failed to allocate memory");
+        *servers_pollfd = tmp_pollfd;
+
+        server* tmp_servers = realloc(*servers, sizeof(server) * *connected_clients);
+        if (tmp_servers == NULL)
+            error("failed to allocate memory");
+        *servers = tmp_servers;
+    }
+}
+
+void receive_message(const int i, int* connected_servers, server** servers)
+{
+    char buffer[BUFFER_SIZE];
+
+    read(servers[i]->sock, buffer, BUFFER_SIZE - 1);
+    if (servers[i]->server_name == NULL)
+    {
+        if (buffer[strlen(buffer) - 2] == '\r')
+            buffer[strlen(buffer) - 2] = '\0';
+        else
+            buffer[strlen(buffer) - 1] = '\0';
+
+        servers[i]->server_name = malloc(strlen(buffer) + 1);
+        strcpy(servers[i]->server_name, buffer);
+        printf("Received server name from server with sock id %d: %s\n", servers[i]->sock, buffer);
+        write(servers[i]->sock, "PAVADINIMASOK\n", 14);
+
+        return;
+    }
+}
+
+void receive_data(int *connected_servers, struct pollfd** servers_pollfd, server** servers)
+{
+    for (int i = 0; i < *connected_servers; i++)
+    {
+        if ((*servers_pollfd)[i].revents & POLLHUP)
+        {
+            disconnect_server(i, connected_servers, servers_pollfd, servers);
+        }
+        else if ((*servers_pollfd)[i].revents & POLLIN)
+        {
+            receive_message(i, connected_servers, servers);
+        }
+    }
 }
 
 void signal_handler(int)
