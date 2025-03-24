@@ -8,6 +8,8 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <netdb.h>
+#include <time.h>
+#include "Parse.h"
 
 #define BUFFER_SIZE 1024
 
@@ -27,6 +29,8 @@ int bind_to_port(const char *port, int *sock, struct addrinfo **info);
 int connect_server(int sock, struct addrinfo *server_addr, int *connected_servers, server** servers, struct pollfd** servers_pollfd);
 void receive_data(int *connected_servers, struct pollfd** servers_pollfd, server** servers);
 void signal_handler(int);
+
+int starts_with(const char* str, const char* prefix);
 
 volatile int keep_running = 1;
 
@@ -148,27 +152,38 @@ int connect_server(const int sock, struct addrinfo* server_addr, int* connected_
     return 0;
 }
 
-void disconnect_server(const int i, int* connected_clients, struct pollfd** servers_pollfd, server** servers)
+void disconnect_server(const int i, int* connected_servers, struct pollfd** servers_pollfd, server** servers)
 {
-    printf("Server with socket fd %d and title %s disconnected", (*servers_pollfd)[i].fd, servers[i]->server_name);
+    printf("Server with socket fd %d and title %s disconnected\n", (*servers_pollfd)[i].fd, servers[i]->server_name);
 
     close((*servers_pollfd)[i].fd);
 
     free((*servers)[i].server_name);
 
-    for (int j = i; j < *connected_clients - 1; j++)
+    if (*connected_servers == 1)
+    {
+        free(*servers);
+        free(*servers_pollfd);
+
+        *servers = NULL;
+        *servers_pollfd = NULL;
+
+        (*connected_servers)--;
+    }
+
+    for (int j = i; j < *connected_servers - 1; j++)
     {
         (*servers_pollfd)[j] = (*servers_pollfd)[j + 1];
         (*servers)[j] = (*servers)[j + 1];
 
-        (*connected_clients)--;
+        (*connected_servers)--;
 
-        struct pollfd* tmp_pollfd = realloc(*servers_pollfd, sizeof(struct pollfd) * *connected_clients);
+        struct pollfd* tmp_pollfd = realloc(*servers_pollfd, sizeof(struct pollfd) * *connected_servers);
         if (tmp_pollfd == NULL)
             error("failed to allocate memory");
         *servers_pollfd = tmp_pollfd;
 
-        server* tmp_servers = realloc(*servers, sizeof(server) * *connected_clients);
+        server* tmp_servers = realloc(*servers, sizeof(server) * *connected_servers);
         if (tmp_servers == NULL)
             error("failed to allocate memory");
         *servers = tmp_servers;
@@ -177,7 +192,7 @@ void disconnect_server(const int i, int* connected_clients, struct pollfd** serv
 
 void receive_message(const int i, int* connected_servers, server** servers)
 {
-    char buffer[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE] = "";
 
     read(servers[i]->sock, buffer, BUFFER_SIZE - 1);
     if (servers[i]->server_name == NULL)
@@ -194,6 +209,59 @@ void receive_message(const int i, int* connected_servers, server** servers)
 
         return;
     }
+
+    if (starts_with(buffer, "@get") == 0)
+    {
+        // @get <user-to>
+        char user_name[BUFFER_SIZE] = "";
+
+        get_parse_user_name(buffer, user_name);
+
+        char file_server_name[BUFFER_SIZE] = "";
+        char file_user_name[BUFFER_SIZE] = "";
+        FILE* file = fopen("log.txt", "r");
+        char file_buffer[BUFFER_SIZE] = "";
+        while (fgets(file_buffer, BUFFER_SIZE - 1, file))
+        {
+            bzero(file_server_name, BUFFER_SIZE);
+            bzero(file_user_name, BUFFER_SIZE);
+            log_parse_server_name_to(file_buffer, file_server_name);
+            log_parse_user_name_to(file_buffer, file_user_name);
+
+            if (strcmp((*servers)[i].server_name, file_server_name) == 0 && strcmp(user_name, file_user_name) == 0)
+            {
+                write(servers[i]->sock, file_buffer, BUFFER_SIZE);
+            }
+
+            bzero(file_buffer, BUFFER_SIZE);
+        }
+
+        fclose(file);
+    }
+    else if (starts_with(buffer, "@send") == 0)
+    {
+        // @send <server-name> <user-to> <user-from>: msg
+        char server_name_to[BUFFER_SIZE] = "";
+        char user_name_to[BUFFER_SIZE] = "";
+        char user_name_from[BUFFER_SIZE] = "";
+        char msg[BUFFER_SIZE] = "";
+
+        send_parse_server_name(buffer, server_name_to);
+        send_parse_user_name_to(buffer, user_name_to);
+        send_parse_user_name_from(buffer, user_name_from);
+        parse_msg(buffer, msg);
+
+        FILE* file = fopen("log.txt", "a");
+        if (file == NULL)
+            error("failed to open file");
+
+        const time_t t = time(NULL);
+        const struct tm tm = *localtime(&t);
+        fprintf(file, "[%d-%02d-%02d %02d:%02d:%02d] <%s> <%s> -> <%s> <%s>: %s\n",
+            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            (*servers)[i].server_name, user_name_from, server_name_to, user_name_to, msg);
+        fclose(file);
+    }
 }
 
 void receive_data(int *connected_servers, struct pollfd** servers_pollfd, server** servers)
@@ -209,6 +277,11 @@ void receive_data(int *connected_servers, struct pollfd** servers_pollfd, server
             receive_message(i, connected_servers, servers);
         }
     }
+}
+
+int starts_with(const char* str, const char* prefix)
+{
+    return strncmp(str, prefix, strlen(prefix));
 }
 
 void signal_handler(int)

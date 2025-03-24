@@ -3,4 +3,6 @@ project(EmailServer C)
 
 set(CMAKE_C_STANDARD 99)
 
-add_executable(EmailServer main.c)
+add_executable(EmailServer main.c
+        Parse.c
+        Parse.h)
