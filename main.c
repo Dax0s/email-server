@@ -146,7 +146,6 @@ int connect_server(const int sock, struct addrinfo* server_addr, int* connected_
     tmp_pollfd.events = POLLIN;
     (*servers_pollfd)[*connected_servers - 1] = tmp_pollfd;
 
-    write(curr_server.sock, "ATSIUSKPAVADINIMA\n", 18);
     printf("Server connected. Socket fd: %d\n", curr_server.sock);
 
     return 0;
@@ -154,58 +153,45 @@ int connect_server(const int sock, struct addrinfo* server_addr, int* connected_
 
 void disconnect_server(const int i, int* connected_servers, struct pollfd** servers_pollfd, server** servers)
 {
-    printf("Server with socket fd %d and title %s disconnected\n", (*servers_pollfd)[i].fd, servers[i]->server_name);
+    printf("Server with socket fd %d and title %s disconnected\n", (*servers_pollfd)[i].fd, (*servers)[i].server_name);
 
     close((*servers_pollfd)[i].fd);
 
     free((*servers)[i].server_name);
-
-    if (*connected_servers == 1)
-    {
-        free(*servers);
-        free(*servers_pollfd);
-
-        *servers = NULL;
-        *servers_pollfd = NULL;
-
-        (*connected_servers)--;
-    }
+    (*connected_servers)--;
 
     for (int j = i; j < *connected_servers - 1; j++)
     {
         (*servers_pollfd)[j] = (*servers_pollfd)[j + 1];
         (*servers)[j] = (*servers)[j + 1];
-
-        (*connected_servers)--;
-
-        struct pollfd* tmp_pollfd = realloc(*servers_pollfd, sizeof(struct pollfd) * *connected_servers);
-        if (tmp_pollfd == NULL)
-            error("failed to allocate memory");
-        *servers_pollfd = tmp_pollfd;
-
-        server* tmp_servers = realloc(*servers, sizeof(server) * *connected_servers);
-        if (tmp_servers == NULL)
-            error("failed to allocate memory");
-        *servers = tmp_servers;
     }
+
+    struct pollfd* tmp_pollfd = realloc(*servers_pollfd, sizeof(struct pollfd) * *connected_servers);
+    if (tmp_pollfd == NULL)
+        error("failed to allocate memory");
+    *servers_pollfd = tmp_pollfd;
+
+    server* tmp_servers = realloc(*servers, sizeof(server) * *connected_servers);
+    if (tmp_servers == NULL)
+        error("failed to allocate memory");
+    *servers = tmp_servers;
 }
 
 void receive_message(const int i, int* connected_servers, server** servers)
 {
     char buffer[BUFFER_SIZE] = "";
 
-    read(servers[i]->sock, buffer, BUFFER_SIZE - 1);
-    if (servers[i]->server_name == NULL)
+    read((*servers)[i].sock, buffer, BUFFER_SIZE - 1);
+    if ((*servers)[i].server_name == NULL)
     {
         if (buffer[strlen(buffer) - 2] == '\r')
             buffer[strlen(buffer) - 2] = '\0';
-        else
+        else if (buffer[strlen(buffer) - 1] == '\n')
             buffer[strlen(buffer) - 1] = '\0';
 
-        servers[i]->server_name = malloc(strlen(buffer) + 1);
-        strcpy(servers[i]->server_name, buffer);
-        printf("Received server name from server with sock id %d: %s\n", servers[i]->sock, buffer);
-        write(servers[i]->sock, "PAVADINIMASOK\n", 14);
+        (*servers)[i].server_name = malloc(strlen(buffer) + 1);
+        strcpy((*servers)[i].server_name, buffer);
+        printf("Received server name from server with sock id %d: %s\n", (*servers)[i].sock, buffer);
 
         return;
     }
@@ -221,6 +207,12 @@ void receive_message(const int i, int* connected_servers, server** servers)
         char file_user_name[BUFFER_SIZE] = "";
         FILE* file = fopen("log.txt", "r");
         char file_buffer[BUFFER_SIZE] = "";
+
+        if (file == NULL)
+        {
+            write((*servers)[i].sock, "@end\n", 5);
+            return;
+        }
         while (fgets(file_buffer, BUFFER_SIZE - 1, file))
         {
             bzero(file_server_name, BUFFER_SIZE);
@@ -230,13 +222,19 @@ void receive_message(const int i, int* connected_servers, server** servers)
 
             if (strcmp((*servers)[i].server_name, file_server_name) == 0 && strcmp(user_name, file_user_name) == 0)
             {
-                write(servers[i]->sock, file_buffer, BUFFER_SIZE);
+                write((*servers)[i].sock, file_buffer, strlen(file_buffer));
+                bzero(file_buffer, BUFFER_SIZE);
+                read((*servers)[i].sock, file_buffer, BUFFER_SIZE - 1);
+
+                if (starts_with(file_buffer, "@received") != 0)
+                    return;
             }
 
             bzero(file_buffer, BUFFER_SIZE);
         }
-
         fclose(file);
+
+        write((*servers)[i].sock, "@end\n", 5);
     }
     else if (starts_with(buffer, "@send") == 0)
     {

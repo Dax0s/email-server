@@ -1,5 +1,6 @@
 #include "Parse.h"
 
+#include <stdio.h>
 #include <string.h>
 
 void get_parse_user_name(const char* str, char* user_name)
